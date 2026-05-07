@@ -4,6 +4,7 @@
             "https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/vline/vehicle-positions"],
     "tripsUrl": ["https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/metro/trip-updates",
                  "https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/vline/trip-updates"],
+    "alertsUrl": ["https://api.opendata.transport.vic.gov.au/opendata/public-transport/gtfs/realtime/v1/metro/service-alerts"],
     "keyHeader": "KeyId",
     "fetchIntervalSeconds": 15,
     "format": "GTFSRealtime",

@@ -1,31 +1,242 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Map</title>
+    <title>Live Transport Map</title>
     <script>
-        // --- Dynamic Title based on URL ---
         (function () {
-            // Try to extract region from pathname, e.g. /wlg-ltm/api/map or /WLG/api/map
             const path = window.location.pathname.toLowerCase();
             const match = path.match(/^\/?([^\/-]+)(?:-ltm)?[^\/]*\/api/);
-            if (match) {
-                const region = match[1].toUpperCase();
-                document.title = region + ' Map';
-            }
+            if (match) document.title = match[1].toUpperCase() + ' Live Map';
         })();
     </script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     <style>
-        html,
-        body {
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface2: #22263a;
+            --border: #2e3350;
+            --text: #e2e8f0;
+            --text-muted: #8892aa;
+            --accent: #3b82f6;
+            --sidebar-w: 320px;
+            --header-h: 52px;
+        }
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        html, body {
             height: 100%;
-            margin: 0;
-            padding: 0;
-            font-family: sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            overflow: hidden;
+        }
+
+        /* ── Layout ── */
+        #app {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        /* ── Sidebar ── */
+        #sidebar {
+            width: var(--sidebar-w);
+            min-width: var(--sidebar-w);
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            z-index: 500;
+            transition: transform 0.25s ease;
+        }
+
+        #sidebar-header {
+            height: var(--header-h);
+            padding: 0 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        #network-name {
+            font-size: 1rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            flex: 1;
+        }
+
+        #status-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: #22c55e;
+            box-shadow: 0 0 6px #22c55e88;
+            flex-shrink: 0;
+        }
+
+        #status-dot.error { background: #ef4444; box-shadow: 0 0 6px #ef444488; }
+
+        #vehicle-count {
+            font-size: 0.75rem;
+            font-weight: 600;
+            background: var(--accent);
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 999px;
+        }
+
+        #sidebar-body {
+            flex: 1;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+
+        /* ── Search ── */
+        #search-wrap {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        #vehicle-search {
+            width: 100%;
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            padding: 8px 12px;
+            font-size: 0.875rem;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        #vehicle-search:focus { border-color: var(--accent); }
+        #vehicle-search::placeholder { color: var(--text-muted); }
+
+        #search-results {
+            margin-top: 6px;
+            max-height: 180px;
+            overflow-y: auto;
+        }
+
+        #search-results .result-item {
+            padding: 6px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            color: var(--text);
+            transition: background 0.1s;
+        }
+
+        #search-results .result-item:hover { background: var(--surface2); }
+        #search-results .result-item.stale { color: var(--text-muted); font-style: italic; }
+
+        /* ── Section headers ── */
+        .section-header {
+            padding: 12px 14px 6px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        /* ── Alerts ── */
+        #alerts-list { padding: 0 10px 10px; }
+
+        .alert-card {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            overflow: hidden;
+            cursor: pointer;
+        }
+
+        .alert-card.effect-NO_SERVICE      { border-left-color: #ef4444; }
+        .alert-card.effect-REDUCED_SERVICE { border-left-color: #f59e0b; }
+        .alert-card.effect-SIGNIFICANT_DELAYS { border-left-color: #f97316; }
+        .alert-card.effect-DETOUR          { border-left-color: #eab308; }
+        .alert-card.effect-MODIFIED_SERVICE{ border-left-color: #3b82f6; }
+        .alert-card.effect-NO_EFFECT       { border-left-color: #6b7280; }
+
+        .alert-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 10px 12px;
+        }
+
+        .alert-badge {
+            font-size: 0.65rem;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 4px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            margin-top: 1px;
+            background: #6b728022;
+            color: var(--text-muted);
+        }
+
+        .alert-card.effect-NO_SERVICE      .alert-badge { background: #ef444422; color: #ef4444; }
+        .alert-card.effect-REDUCED_SERVICE .alert-badge { background: #f59e0b22; color: #f59e0b; }
+        .alert-card.effect-SIGNIFICANT_DELAYS .alert-badge { background: #f9731622; color: #f97316; }
+        .alert-card.effect-DETOUR          .alert-badge { background: #eab30822; color: #eab308; }
+        .alert-card.effect-MODIFIED_SERVICE .alert-badge { background: #3b82f622; color: #3b82f6; }
+
+        .alert-title {
+            font-size: 0.82rem;
+            font-weight: 600;
+            line-height: 1.35;
+            flex: 1;
+        }
+
+        .alert-desc {
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            padding: 0 12px 10px;
+            line-height: 1.5;
+            display: none;
+        }
+
+        .alert-card.open .alert-desc { display: block; }
+
+        .alert-routes {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            padding: 0 12px 8px;
+        }
+
+        .route-tag {
+            font-size: 0.65rem;
+            padding: 1px 6px;
+            border-radius: 4px;
+            background: var(--surface);
+            color: var(--text-muted);
+            border: 1px solid var(--border);
+        }
+
+        #no-alerts {
+            padding: 12px 14px;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+        }
+
+        /* ── Map area ── */
+        #map-wrap {
+            flex: 1;
+            position: relative;
+            min-width: 0;
         }
 
         #map {
@@ -33,437 +244,1098 @@
             width: 100%;
         }
 
-        .status-overlay {
-            position: absolute;
-            top: 10px;
-            left: 50px;
-            z-index: 1000;
-            background: rgba(255, 255, 255, 0.8);
-            padding: 5px 10px;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-            font-size: 0.9em;
-        }
-
-        .vehicle-marker {
-            background-color: #3388ff;
-            border: 2px solid rgba(255, 255, 255, 0.5);
-            border-radius: 50%;
-            width: 5px;
-            height: 5px;
-        }
-
-        .vehicle-marker.stale {
-            background-color: #808080;
-        }
-
-        .vehicle-arrow {
-            width: 18px;
-            height: 18px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .vehicle-arrow-shape {
-            width: 0;
-            height: 0;
-            border-left: 6px solid transparent;
-            border-right: 6px solid transparent;
-            border-bottom: 36px solid #3388ff;
-            opacity: 0.95;
-        }
-
-        .vehicle-arrow.stale .vehicle-arrow-shape {
-            border-bottom-color: #808080;
-        }
-
         #map,
         .leaflet-container,
-        .leaflet-layer {
-            background: #000 !important;
-        }
+        .leaflet-layer { background: #0f1117 !important; }
 
-        .leaflet-tile {
-            filter: grayscale(1) brightness(1.1) contrast(1.1) invert(1.0);
-        }
-
-        #search-container {
+        /* ── Sidebar toggle (mobile) ── */
+        #sidebar-toggle {
+            display: none;
             position: absolute;
             top: 10px;
-            right: 50px;
-            z-index: 1100;
-            background: rgba(255, 255, 255, 0.95);
-            padding: 6px 12px;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.07);
-        }
-
-        #vehicle-search {
-            width: 180px;
-            padding: 4px 8px;
-            border-radius: 3px;
-            border: 1px solid #aaa;
-            outline: none;
-        }
-
-        #search-results {
-            max-height: calc(100vh - 60px);
-            overflow-y: auto;
-            font-size: 0.95em;
-        }
-
-        #search-results div {
+            left: 10px;
+            z-index: 1000;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 8px;
+            padding: 8px 10px;
             cursor: pointer;
-            padding: 2px 0;
+            font-size: 1.1rem;
+            line-height: 1;
         }
 
-        #search-results div.stale {
-            font-style: italic;
-            opacity: 0.6;
-            color: #666;
+        /* ── Leaflet popup dark theme ── */
+        .leaflet-popup-content-wrapper {
+            background: var(--surface) !important;
+            color: var(--text) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: 10px !important;
+            box-shadow: 0 8px 32px #0008 !important;
+        }
+
+        .leaflet-popup-tip { background: var(--surface) !important; }
+
+        .leaflet-popup-content {
+            margin: 12px 14px !important;
+            font-size: 0.82rem !important;
+            line-height: 1.6 !important;
+        }
+
+        .popup-label {
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .popup-route-badge {
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .popup-row { display: flex; justify-content: space-between; gap: 16px; color: var(--text-muted); }
+        .popup-row span:last-child { color: var(--text); text-align: right; }
+
+        .popup-stops-title {
+            margin-top: 8px;
+            font-weight: 600;
+            color: var(--text-muted);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .popup-stop { color: var(--text-muted); padding: 1px 0; }
+        .popup-stop b { color: var(--text); font-weight: 600; }
+
+        /* ── Station departure board ── */
+        .station-popup { min-width: 240px; max-width: 300px; }
+        .station-popup-title { font-size: 1rem; font-weight: 700; margin-bottom: 10px; }
+
+        .dep-group { margin-bottom: 10px; }
+        .dep-group-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 4px;
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-muted);
+        }
+        .dep-group-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .dep-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 3px 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.8rem;
+            gap: 8px;
+        }
+        .dep-row:last-child { border-bottom: none; }
+        .dep-time { font-weight: 600; white-space: nowrap; color: var(--text); }
+        .dep-time.soon { color: #22c55e; }
+        .dep-time.imminent { color: #f97316; }
+        .dep-dest { color: var(--text-muted); font-size: 0.75rem; flex: 1; text-align: right; }
+
+        .dep-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+        .dep-badge {
+            font-size: 0.62rem;
+            font-weight: 700;
+            padding: 1px 5px;
+            border-radius: 3px;
+            letter-spacing: 0.03em;
+            white-space: nowrap;
+        }
+        .badge-inbound  { background: #1e3a5f; color: #60a5fa; }
+        .badge-outbound { background: #1a2e1a; color: #4ade80; }
+        .badge-loop     { background: #2d1f4e; color: #c084fc; }
+        .badge-tunnel   { background: #1a2e3d; color: #38bdf8; }
+        .badge-flinders { background: #2a2200; color: #fbbf24; }
+        .badge-express  { background: #3d1a1a; color: #f87171; }
+        .badge-dest     { background: #1e2535; color: #94a3b8; }
+        .badge-platform { background: #1f2937; color: #e2e8f0; border: 1px solid #374151; }
+
+        /* ── Last-update bar ── */
+        #last-update {
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            z-index: 900;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        /* ── Right panel (Lines) ── */
+        #right-panel {
+            width: 260px;
+            min-width: 260px;
+            background: var(--surface);
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            z-index: 500;
+        }
+
+        #right-panel-header {
+            height: var(--header-h);
+            padding: 0 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        #right-panel-title {
+            font-size: 1rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            flex: 1;
+        }
+
+        #right-panel-body {
+            flex: 1;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+
+        .line-item { border-bottom: 1px solid var(--border); }
+
+        .line-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            cursor: pointer;
+            transition: background 0.1s;
+            user-select: none;
+        }
+
+        .line-header:hover { background: var(--surface2); }
+
+        .line-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            box-shadow: 0 0 4px currentColor;
+        }
+
+        .line-name { font-size: 0.83rem; font-weight: 600; flex: 1; }
+
+        .line-chevron {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            transition: transform 0.2s;
+        }
+
+        .line-item.open .line-chevron { transform: rotate(90deg); }
+
+        .line-stations {
+            display: none;
+            padding: 4px 0;
+            background: #0d1020;
+        }
+
+        .line-item.open .line-stations { display: block; }
+
+        .station-item {
+            display: flex;
+            align-items: center;
+            padding: 5px 14px 5px 30px;
+            cursor: pointer;
+            font-size: 0.78rem;
+            color: var(--text-muted);
+            transition: background 0.1s, color 0.1s;
+            position: relative;
+        }
+
+        .station-item::before {
+            content: '';
+            position: absolute;
+            left: 18px;
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--border);
+            flex-shrink: 0;
+        }
+
+        .station-item:hover { background: var(--surface); color: var(--text); }
+        .station-item:hover::before { background: #fff; }
+
+        /* ── Right panel toggle (mobile) ── */
+        #lines-toggle {
+            display: none;
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 8px;
+            padding: 8px 10px;
+            cursor: pointer;
+            font-size: 0.78rem;
+            font-weight: 600;
+            line-height: 1;
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 700px) {
+            #sidebar {
+                position: absolute;
+                top: 0; left: 0; bottom: 0;
+                transform: translateX(-100%);
+                z-index: 800;
+            }
+            #sidebar.open { transform: translateX(0); }
+            #sidebar-toggle { display: block; }
+        }
+
+        @media (max-width: 1100px) {
+            #right-panel {
+                position: absolute;
+                top: 0; right: 0; bottom: 0;
+                transform: translateX(100%);
+                z-index: 800;
+                transition: transform 0.25s ease;
+            }
+            #right-panel.open { transform: translateX(0); }
+            #lines-toggle { display: block; }
         }
     </style>
 </head>
-
 <body>
+<div id="app">
+    <!-- ── Sidebar ── -->
+    <aside id="sidebar">
+        <div id="sidebar-header">
+            <span id="status-dot"></span>
+            <span id="network-name">Melbourne</span>
+            <span id="vehicle-count">—</span>
+        </div>
+        <div id="sidebar-body">
+            <div id="search-wrap">
+                <input id="vehicle-search" type="text" placeholder="Search vehicle…" autocomplete="off" />
+                <div id="search-results"></div>
+            </div>
 
-    <div id="map"></div>
-    <div id="status" class="status-overlay">Loading map...</div>
-    <div id="search-container">
-        <input id="vehicle-search" type="text" placeholder="Search vehicle label..." />
-        <div id="search-results"></div>
+            <div class="section-header">Service Alerts</div>
+            <div id="alerts-list"><div id="no-alerts">Loading alerts…</div></div>
+        </div>
+    </aside>
+
+    <!-- ── Map ── -->
+    <div id="map-wrap">
+        <button id="sidebar-toggle" onclick="toggleSidebar()">☰</button>
+        <button id="lines-toggle" onclick="toggleLinePanel()">Lines ▶</button>
+        <div id="map"></div>
+        <div id="last-update">—</div>
     </div>
 
-    <!-- Leaflet JavaScript -->
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- ── Right Panel (Lines) ── -->
+    <aside id="right-panel">
+        <div id="right-panel-header">
+            <span id="right-panel-title">Lines</span>
+        </div>
+        <div id="right-panel-body">
+            <div id="lines-list"></div>
+        </div>
+    </aside>
+</div>
 
-    <script>
-        // --- Configuration ---
-        const API_ENDPOINT = window.location.pathname.replace(/\/api\/map/, '/api/vehicles/trains');
-        const STOPS_ENDPOINT = window.location.pathname.replace(/\/api\/map/, '/api/stops');
-        const REFRESH_INTERVAL_MS = 10 * 1000; // Refresh every 10 seconds
-        const INITIAL_ZOOM_LEVEL = 12;
-        const STATUS_ELEMENT = document.getElementById('status');
-        const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 min to consider vehicle stale
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+// ── Config ──────────────────────────────────────────────────────────────────
+// When hosting map.html separately from the backend (e.g. on cPanel), set this
+// to your backend's network prefix URL, e.g. 'https://your-app.up.railway.app/mel-ltm'
+// Leave empty to use the same origin (default when served by the backend itself).
+const BACKEND_URL = '';
+const BASE        = BACKEND_URL || window.location.pathname.replace(/\/api\/map$/, '');
+const VEHICLES_EP = BASE + '/api/vehicles/trains';
+const STOPS_EP    = BASE + '/api/stops';
+const ALERTS_EP   = BASE + '/api/alerts';
+const REFRESH_MS  = 15_000;        // match backend fetch interval
+const STALE_MS    = 3 * 60_000;   // fade after 3 min without update
+const REMOVE_MS   = 10 * 60_000;  // remove from map after 10 min without update
 
-        // --- Relative Time Formatter ---
-        function getRelativeTime(timestamp) {
-            const diff = Date.now() - timestamp;
-            const absDiff = Math.abs(diff);
+// ── Route colours (Melbourne metro + vline) ─────────────────────────────────
+const ROUTE_COLORS = {
+    'aus:vic:vic-02-CGB:': '#FFBE00', 'aus:vic:vic-02-UFD:': '#FFBE00',
+    'aus:vic:vic-02-WIL:': '#F178AF', 'aus:vic:vic-02-WER:': '#F178AF', 'aus:vic:vic-02-SHM:': '#F178AF',
+    'aus:vic:vic-02-MDD:': '#BE1014', 'aus:vic:vic-02-HBE:': '#BE1014',
+    'aus:vic:vic-02-LIL:': '#2750AA', 'aus:vic:vic-02-BEG:': '#2750AA',
+    'aus:vic:vic-02-ALM:': '#2750AA', 'aus:vic:vic-02-GWY:': '#8b542f',
+    'aus:vic:vic-02-SUY:': '#34ACE1', 'aus:vic:vic-02-PKM:': '#34ACE1', 'aus:vic:vic-02-CBE:': '#34ACE1',
+    'aus:vic:vic-02-FKN:': '#028430', 'aus:vic:vic-02-STY:': '#028430',
+    'aus:vic:vic-02-RCE:': '#888',
+    // V/Line
+    'aus:vic:vic-01-ART:': '#8F1A95', 'aus:vic:vic-01-BAT:': '#8F1A95',
+    'aus:vic:vic-01-BDE:': '#8F1A95', 'aus:vic:vic-01-BGO:': '#8F1A95',
+    'aus:vic:vic-01-ECH:': '#8F1A95', 'aus:vic:vic-01-GEL:': '#8F1A95',
+    'aus:vic:vic-01-MBY:': '#8F1A95', 'aus:vic:vic-01-SER:': '#8F1A95',
+    'aus:vic:vic-01-SNH:': '#8F1A95', 'aus:vic:vic-01-SWL:': '#8F1A95',
+    'aus:vic:vic-01-TRN:': '#8F1A95', 'aus:vic:vic-01-WBL:': '#8F1A95',
+    // Wellington / Auckland fallback
+    '2':'#d3d110','3':'#f28399','4':'#fdc909','5':'#f4892f','6':'#42c3dc',
+    'WEST-201':'#95c840','EAST-201':'#fdb918','ONE-201':'#00adef','STH-201':'#ed302a',
+};
+const DEFAULT_COLOR = '#a855f7';
 
-            if (absDiff < 60 * 60 * 1000) {
-                const minutes = Math.floor(absDiff / 60000);
-                const seconds = Math.floor((absDiff % 60000) / 1000);
-                if (minutes === 0) {
-                    return `${seconds}s ago`;
-                }
-                return `${minutes}m ${seconds}s ago`;
-            }
+// Maps the 3-letter suffix of a route_id to a human-readable line name
+const ROUTE_NAMES = {
+    // Melbourne Metro (vic-02)
+    'UFD': 'Upfield',
+    'CGB': 'Craigieburn',
+    'WIL': 'Williamstown',
+    'WER': 'Werribee',
+    'SHM': 'Sandringham',
+    'MDD': 'Mernda',
+    'HBE': 'Hurstbridge',
+    'LIL': 'Lilydale',
+    'BEG': 'Belgrave',
+    'ALM': 'Alamein',
+    'GWY': 'Glen Waverley',
+    'SUY': 'Sunbury',
+    'PKM': 'Pakenham',
+    'CBE': 'Cranbourne',
+    'FKN': 'Frankston',
+    'STY': 'Stony Point',
+    'RCE': 'Flemington Racecourse',
+    // V/Line (vic-01)
+    'ART': 'Ararat',
+    'BAT': 'Ballarat',
+    'BDE': 'Bendigo',
+    'BGO': 'Bendigo',
+    'ECH': 'Echuca',
+    'GEL': 'Geelong',
+    'MBY': 'Maryborough',
+    'SER': 'Seymour',
+    'SNH': 'Swan Hill',
+    'SWL': 'Shepparton',
+    'TRN': 'Traralgon',
+    'WBL': 'Warrnambool',
+    'ABY': 'Albury',
+};
 
-            const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
-            const units = [
-                { unit: 'year', ms: 365 * 24 * 60 * 60 * 1000 },
-                { unit: 'month', ms: 28 * 24 * 60 * 60 * 1000 },
-                { unit: 'week', ms: 7 * 24 * 60 * 60 * 1000 },
-                { unit: 'day', ms: 24 * 60 * 60 * 1000 },
-                { unit: 'hour', ms: 60 * 60 * 1000 },
-            ];
-            for (const { unit, ms } of units) {
-                if (absDiff >= ms) {
-                    const value = Math.floor(diff / ms);
-                    return rtf.format(-value, unit);
-                }
-            }
-            return '';
+function getRouteName(routeId) {
+    if (!routeId) return null;
+    // Extract the 3-letter code: "aus:vic:vic-02-WIL:" → "WIL"
+    const match = routeId.match(/vic-\d{2}-([A-Z]{3})/);
+    if (!match) return null;
+    return ROUTE_NAMES[match[1]] || match[1];
+}
+
+function isVLine(routeId) {
+    return routeId && routeId.includes('vic-01');
+}
+
+function getDirection(directionId) {
+    // For metro: 0 = outbound (away from City Loop), 1 = inbound (to City Loop)
+    // For V/Line: 0 = away from Melbourne, 1 = toward Melbourne
+    if (directionId === 0 || directionId === '0') return 'Outbound';
+    if (directionId === 1 || directionId === '1') return 'Inbound';
+    return null;
+}
+
+// ── Alert effect labels ──────────────────────────────────────────────────────
+const EFFECT_LABELS = {
+    NO_SERVICE: 'No Service',
+    REDUCED_SERVICE: 'Reduced Service',
+    SIGNIFICANT_DELAYS: 'Delays',
+    DETOUR: 'Detour',
+    MODIFIED_SERVICE: 'Modified',
+    ADDITIONAL_SERVICE: 'Extra Service',
+    OTHER_EFFECT: 'Alert',
+    UNKNOWN_EFFECT: 'Alert',
+    STOP_MOVED: 'Stop Moved',
+    NO_EFFECT: 'Info',
+    ACCESSIBILITY_ISSUE: 'Accessibility',
+};
+
+// Numeric effect → string key (protobufjs may emit integers)
+const EFFECT_INT = {
+    0:'NO_SERVICE',1:'REDUCED_SERVICE',2:'SIGNIFICANT_DELAYS',3:'DETOUR',
+    4:'ADDITIONAL_SERVICE',5:'MODIFIED_SERVICE',6:'OTHER_EFFECT',
+    7:'UNKNOWN_EFFECT',8:'STOP_MOVED',9:'NO_EFFECT',10:'ACCESSIBILITY_ISSUE',
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function relativeTime(ts) {
+    const diff = Date.now() - ts;
+    const abs = Math.abs(diff);
+    if (abs < 60_000) return `${Math.floor(abs / 1000)}s ago`;
+    if (abs < 3_600_000) {
+        const m = Math.floor(abs / 60_000), s = Math.floor((abs % 60_000) / 1000);
+        return `${m}m ${s}s ago`;
+    }
+    const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+    for (const [u, ms] of [['hour',3_600_000],['day',86_400_000]]) {
+        if (abs >= ms) return rtf.format(-Math.floor(diff / ms), u);
+    }
+    return '';
+}
+
+function fmtTime(ts) {
+    return new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function getTranslation(translatedString) {
+    if (!translatedString) return '';
+    const t = translatedString.translation;
+    if (!t || t.length === 0) return '';
+    const en = t.find(x => !x.language || x.language === 'en');
+    return (en || t[0]).text || '';
+}
+
+// ── Map setup ────────────────────────────────────────────────────────────────
+const map = L.map('map');
+
+// Dark base map
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>',
+    subdomains: 'abcd',
+}).addTo(map);
+
+// Railway overlay — screen blend removes white bg; filter tones down the brightness
+map.createPane('railway');
+const railPane = map.getPane('railway');
+railPane.style.zIndex = 350;
+railPane.style.mixBlendMode = 'screen';
+railPane.style.filter = 'saturate(0.45) brightness(0.55)';
+L.tileLayer('https://{s}.tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    opacity: 0.9,
+    pane: 'railway',
+    attribution: '&copy; <a href="https://www.openrailwaymap.org/">OpenRailwayMap</a>',
+}).addTo(map);
+
+// ── Marker factory ───────────────────────────────────────────────────────────
+function arrowIcon(bearing, color, isStale) {
+    const c = isStale ? '#5a6070' : (color || DEFAULT_COLOR);
+    const rot = bearing != null ? bearing : 0;
+    const outline = isStale ? '#22263a' : '#ffffff';
+    const opacity = isStale ? 0.45 : 1;
+    return L.divIcon({
+        className: '',
+        iconSize: [22, 28],
+        iconAnchor: [11, 14],
+        html: `<svg width="22" height="28" viewBox="0 0 22 28" style="transform:rotate(${rot}deg);overflow:visible;opacity:${opacity}">
+            <polygon points="11,1 21,26 1,26"
+                fill="${c}"
+                stroke="${outline}"
+                stroke-width="2"
+                stroke-linejoin="round"
+                paint-order="stroke"/>
+        </svg>`
+    });
+}
+
+// ── Popup builder ────────────────────────────────────────────────────────────
+let stopsMap = {};
+fetch(STOPS_EP).then(r => r.json()).then(d => {
+    stopsMap = d;
+    buildStopToParent();
+    buildStationMarkers();
+    buildLinePanel();
+}).catch(() => {});
+
+function buildPopup(entity) {
+    const v = entity.vehicle;
+    const pos = v?.position;
+    const info = v?.vehicle;
+    const trip = v?.trip;
+    const routeId = trip?.route_id || trip?.routeId || '';
+    const color = ROUTE_COLORS[routeId] || DEFAULT_COLOR;
+    const label = info?.label || info?.id || '—';
+    const isStale = v?.timestamp ? Date.now() - v.timestamp * 1000 > STALE_MS : false;
+
+    const lineName = getRouteName(routeId);
+    const direction = getDirection(trip?.direction_id);
+    const vline = isVLine(routeId);
+    const operator = vline ? 'V/Line' : (lineName ? 'Metro' : null);
+    const lineLabel = lineName ? `${lineName} Line` : (routeId || '');
+    const dirLabel = direction ? ` · ${direction}` : '';
+
+    const stopUpdates = entity.tripUpdate?.stopTimeUpdate || [];
+    const stopsHtml = stopUpdates.slice(0, 8).map(stu => {
+        const s = stopsMap[stu.stopId];
+        const name = s ? s.stop_name.replace(/ Station$/, '') : stu.stopId;
+        const plat = s?.platform_code ? ` Plat ${s.platform_code}` : '';
+        const arr = stu.arrival?.time;
+        const dep = stu.departure?.time;
+        const timeStr = dep ? fmtTime(dep) : arr ? fmtTime(arr) : '';
+        return `<div class="popup-stop"><b>${name}${plat}</b>${timeStr ? ' · ' + timeStr : ''}</div>`;
+    }).join('');
+
+    return `
+        <div class="popup-label">
+            ${label}
+            ${isStale ? '<span style="font-size:0.7rem;color:#888;font-weight:400">stale</span>' : ''}
+        </div>
+        <div style="margin-bottom:8px">
+            <span class="popup-route-badge" style="background:${color}">${lineLabel}</span>
+            ${operator ? `<span class="popup-route-badge" style="background:#334;margin-left:4px">${operator}</span>` : ''}
+        </div>
+        ${dirLabel ? `<div class="popup-row"><span>Direction</span><span>${direction}</span></div>` : ''}
+        ${pos?.speed != null ? `<div class="popup-row"><span>Speed</span><span>${(pos.speed * 3.6).toFixed(0)} km/h</span></div>` : ''}
+        ${pos?.bearing != null ? `<div class="popup-row"><span>Bearing</span><span>${Number(pos.bearing).toFixed(0)}°</span></div>` : ''}
+        ${v?.timestamp ? `<div class="popup-row"><span>Updated</span><span class="live-rt" data-ts="${v.timestamp * 1000}">${relativeTime(v.timestamp * 1000)}</span></div>` : ''}
+        ${stopUpdates.length ? `<div class="popup-stops-title">Upcoming stops</div>${stopsHtml}` : ''}
+    `;
+}
+
+// ── Routing detection ────────────────────────────────────────────────────────
+// Built once after stopsMap loads: numeric stopId string → parent station code
+const stopToParent = new Map();
+
+const CITY_LOOP_PARENTS    = new Set(['vic:rail:PAR','vic:rail:MCE','vic:rail:FGS']);
+const METRO_TUNNEL_PARENTS = new Set(['vic:rail:ARN','vic:rail:PKV','vic:rail:STL','vic:rail:THL','vic:rail:AZC']);
+// All city terminals — if the last stop of a trip is one of these, the train is heading inbound
+const CITY_TERMINAL_PARENTS = new Set([
+    'vic:rail:FSS','vic:rail:SSS',
+    'vic:rail:PAR','vic:rail:MCE','vic:rail:FGS',
+    'vic:rail:STL','vic:rail:THL','vic:rail:AZC','vic:rail:ARN','vic:rail:PKV',
+]);
+
+function buildStopToParent() {
+    stopToParent.clear();
+    Object.entries(stopsMap).forEach(([stopId, s]) => {
+        if (s.parent_station) stopToParent.set(String(stopId), s.parent_station);
+    });
+}
+
+function getServiceMeta(stopTimeUpdates) {
+    let hasLoop = false, hasTunnel = false, isExpress = false;
+    for (const stu of (stopTimeUpdates || [])) {
+        const stopId = String(stu.stopId ?? stu.stop_id ?? '');
+        const parent = stopToParent.get(stopId);
+        if (parent) {
+            if (CITY_LOOP_PARENTS.has(parent))    hasLoop = true;
+            if (METRO_TUNNEL_PARENTS.has(parent)) hasTunnel = true;
         }
+        // GTFS-RT schedule_relationship: 1 = SKIPPED (protobuf int) or string 'SKIPPED'
+        const sr = stu.scheduleRelationship ?? stu.schedule_relationship;
+        if (sr === 1 || sr === 'SKIPPED') isExpress = true;
+    }
+    let routing = 'flinders';
+    if (hasTunnel)    routing = 'tunnel';
+    else if (hasLoop) routing = 'loop';
+    return { routing, isExpress };
+}
 
-        let stopsMap = {};
-        fetch(STOPS_ENDPOINT)
-            .then(response => response.json())
-            .then(data => { stopsMap = data; })
-            .catch(err => { console.error('Stops fetch error:', err); });
+// ── Station markers ──────────────────────────────────────────────────────────
+// parentCode (e.g. "vic:rail:FGS") → Leaflet marker
+const stationMarkers = new Map();
+// parentCode → Set of GTFS platform stop_ids
+const stationPlatforms = new Map();
+// parentCode → {name, lat, lon}
+const stationMeta = new Map();
+// Latest vehicle entities for departure lookups (updated each fetch)
+let latestVehicleEntities = [];
 
-        // --- Map Initialization ---
-        const map = L.map('map');
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-            attribution: '&copy; OpenStreetMap contributors',
-            edgeBufferTiles: 2,
-        }).addTo(map);
+const MIN_ZOOM_FOR_STATIONS = 11;
 
-        // --- Vehicle Marker Management ---
-        const activeIcon = L.divIcon({ className: 'vehicle-marker' });
-        const staleIcon = L.divIcon({ className: 'vehicle-marker stale' });
-        let vehicleMarkers = new Map();
+function stationIcon() {
+    return L.divIcon({
+        className: '',
+        iconSize: [10, 10],
+        iconAnchor: [5, 5],
+        html: `<div style="width:10px;height:10px;border-radius:50%;background:#e2e8f0;border:2px solid #555;box-sizing:border-box;"></div>`
+    });
+}
 
-        // --- Route color mapping ---
-        const ROUTE_COLORS = {
-            // Wellington
-            '2': '#d3d110',   // Kapiti Line
-            '3': '#f28399',   // Melling Line
-            '4': '#fdc909',   // Wairarapa Line
-            '5': '#f4892f',   // Hutt Valley Line
-            '6': '#42c3dc',   // Johnsonville Line
+function buildDepartureBoard(parentCode, stationName, lat, lon) {
+    const platformIds = stationPlatforms.get(parentCode) || new Set();
+    const now = Math.floor(Date.now() / 1000);
 
-            // Auckland
-            'WEST-201': '#95c840',   // Western
-            'EAST-201': '#fdb918',   // Eastern
-            'ONE-201': '#00adef',   // Onehunga
-            'STH-201': '#ed302a',   // Southern
+    const departures = [];
+    latestVehicleEntities.forEach(entity => {
+        const v = entity.vehicle;
+        const trip = v?.trip;
+        const routeId = trip?.route_id || trip?.routeId || '';
+        const stopUpdates = entity.tripUpdate?.stopTimeUpdate || [];
 
-            // Melbourne
-            'aus:vic:vic-02-CGB:': '#FFBE00',   // Craigieburn
-            'aus:vic:vic-02-UFD:': '#FFBE00',   // Upfield
-            'aus:vic:vic-02-WIL:': '#F178AF',   // Williamstown
-            'aus:vic:vic-02-WER:': '#F178AF',   // Werribee
-            'aus:vic:vic-02-MDD:': '#BE1014',   // Mernda
-            'aus:vic:vic-02-HBE:': '#BE1014',   // Hurstbridge
-            'aus:vic:vic-02-LIL:': '#152C6B',   // Lilydale
-            'aus:vic:vic-02-BEG:': '#152C6B',   // Belgrave
-            'aus:vic:vic-02-ALM:': '#152C6B',   // Alamein
-            'aus:vic:vic-02-GWY:': '#8b542f',   // Glen Waverley
-            'aus:vic:vic-02-SUY:': '#34ACE1',   // Sunbury
-            'aus:vic:vic-02-PKM:': '#34ACE1',   // Pakenham
-            'aus:vic:vic-02-CBE:': '#34ACE1',   // Cranbourne
-            'aus:vic:vic-02-FKN:': '#028430',   // Frankston
-            'aus:vic:vic-02-STY:': '#028430',   // Stony Point
-            'aus:vic:vic-02-SHM:': '#F178AF',   // Sandringham
-            'aus:vic:vic-01-ABY:': '#8F1A95',
-            'aus:vic:vic-01-ART:': '#8F1A95',
-            'aus:vic:vic-01-BAT:': '#8F1A95',
-            'aus:vic:vic-01-BDE:': '#8F1A95',
-            'aus:vic:vic-01-BGO:': '#8F1A95',
-            'aus:vic:vic-01-ECH:': '#8F1A95',
-            'aus:vic:vic-01-GEL:': '#8F1A95',
-            'aus:vic:vic-01-MBY:': '#8F1A95',
-            'aus:vic:vic-01-SER:': '#8F1A95',
-            'aus:vic:vic-01-SNH:': '#8F1A95',
-            'aus:vic:vic-01-SWL:': '#8F1A95',
-            'aus:vic:vic-01-TRN:': '#8F1A95',
-            'aus:vic:vic-01-WBL:': '#8F1A95'
-        };
-        const DEFAULT_ARROW_COLOR = '#ff00ff';
-        let vehicleLabels = new Map(); // Map label (lowercase) to vehicleId
+        stopUpdates.forEach(stu => {
+            const stopId = String(stu.stopId ?? stu.stop_id ?? '');
+            if (!platformIds.has(stopId)) return;
+            const dep = stu.departure?.time ? Number(stu.departure.time) : null;
+            const arr = stu.arrival?.time ? Number(stu.arrival.time) : null;
+            const time = dep || arr;
+            if (!time || time < now - 90) return;
 
-        // --- Search UI ---
-        const searchInput = document.getElementById('vehicle-search');
-        const searchResults = document.getElementById('search-results');
+            // Use full stop sequence to determine routing & express status
+            const { routing, isExpress } = getServiceMeta(stopUpdates);
+            const directionId = trip?.direction_id ?? trip?.directionId;
 
-        function updateSearchResults(query) {
-            searchResults.innerHTML = '';
-            if (!query) return;
+            // Last stop from GTFS-RT (highest stop_sequence) — used for direction inference only.
+            // The feed often truncates before the actual terminus, so don't use this for display.
+            const lastStu = stopUpdates.reduce((best, stu) => {
+                const seq = Number(stu.stopSequence ?? stu.stop_sequence ?? 0);
+                const bestSeq = best ? Number(best.stopSequence ?? best.stop_sequence ?? 0) : -1;
+                return seq > bestSeq ? stu : best;
+            }, null) || stopUpdates[stopUpdates.length - 1];
+            const lastStopId = lastStu ? String(lastStu.stopId ?? lastStu.stop_id ?? '') : '';
+            const lastStopParent = lastStopId ? stopToParent.get(lastStopId) : null;
 
-            let filterFn;
-            if (query.includes('*')) {
-                const parts = query.split('*').map(s => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&'));
-                const regex = new RegExp(parts.join('.*'), 'i');
-                filterFn = ([label]) => regex.test(label);
+            // Terminus display name: use LINE_STATION_SEQUENCES (reliable) rather than
+            // the truncated GTFS-RT stop list which often ends 1–2 stops early.
+            const lineKeyMatch = routeId.match(/(vic-\d{2}-[A-Z]{3})/);
+            const lineKey = lineKeyMatch ? lineKeyMatch[1] : null;
+            const knownSeq = lineKey ? LINE_STATION_SEQUENCES[lineKey] : null;
+            const routeTermCode = knownSeq ? knownSeq[knownSeq.length - 1] : null;
+            const routeTermParent = routeTermCode ? `vic:rail:${routeTermCode}` : null;
+            const routeTermName = routeTermParent ? stationMeta.get(routeTermParent)?.name : null;
+            // Fall back to the GTFS-RT last stop only if the route isn't in our sequences
+            const lastStopName = routeTermName
+                || (lastStopParent && stationMeta.get(lastStopParent)?.name)
+                || stopsMap[lastStopId]?.stop_name?.replace(/ (Railway )?Station$/, '')
+                || '';
+
+            const platform = stopsMap[stopId]?.platform_code || null;
+
+            departures.push({
+                time,
+                routeId,
+                lineName: getRouteName(routeId) || routeId,
+                directionId,
+                routing,
+                isExpress,
+                lastStopName,
+                lastStopParent: lastStopParent || '',
+                platform,
+                vehicleLabel: v?.vehicle?.label || v?.vehicle?.id || '',
+            });
+        });
+    });
+
+    const header = `<div class="station-popup-title">${stationName} Station</div>`;
+
+    if (departures.length === 0) {
+        return `<div class="station-popup">${header}
+            <div style="color:var(--text-muted);font-size:0.82rem;margin-top:4px">No real-time services found.<br>
+            <span style="font-size:0.75rem">Only currently-running trains appear here.</span></div>
+        </div>`;
+    }
+
+    // Group by line, dedupe by vehicle, sort by time
+    const groups = new Map();
+    departures.forEach(d => {
+        if (!groups.has(d.lineName)) groups.set(d.lineName, { routeId: d.routeId, deps: [] });
+        groups.get(d.lineName).deps.push(d);
+    });
+
+    groups.forEach(g => {
+        const seen = new Set();
+        g.deps = g.deps
+            .filter(d => { if (seen.has(d.vehicleLabel)) return false; seen.add(d.vehicleLabel); return true; })
+            .sort((a, b) => a.time - b.time)
+            .slice(0, 6);
+    });
+
+    const ROUTING_LABEL = { loop: 'City Loop', tunnel: 'Metro Tunnel', flinders: 'Flinders St' };
+    const ROUTING_BADGE = { loop: 'badge-loop',   tunnel: 'badge-tunnel',  flinders: 'badge-flinders' };
+
+    const groupsHtml = [...groups.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([lineName, g]) => {
+            const color = ROUTE_COLORS[g.routeId] || DEFAULT_COLOR;
+            const rowsHtml = g.deps.map(d => {
+                const minsAway = Math.round((d.time - now) / 60);
+                const timeStr = fmtTime(d.time);
+                const timeClass = minsAway <= 1 ? 'dep-time imminent' : minsAway <= 5 ? 'dep-time soon' : 'dep-time';
+                const dir = getDirection(d.directionId);
+                // When direction_id is absent, infer from the last stop:
+                // if the trip ends at a city terminal it's heading inbound
+                const inferredInbound = dir === null && CITY_TERMINAL_PARENTS.has(d.lastStopParent);
+                const effectiveInbound = dir === 'Inbound' || inferredInbound;
+                const effectiveOutbound = dir === 'Outbound' && !inferredInbound;
+                const dirBadge = effectiveInbound
+                    ? `<span class="dep-badge badge-inbound">Inbound</span>`
+                    : effectiveOutbound
+                        ? `<span class="dep-badge badge-outbound">Outbound</span>`
+                        : '';
+                // Inbound: show City Loop / Metro Tunnel / Flinders St routing
+                // Outbound: show the terminus station name instead
+                const routingBadge = effectiveInbound
+                    ? `<span class="dep-badge ${ROUTING_BADGE[d.routing]}">${ROUTING_LABEL[d.routing]}</span>`
+                    : d.lastStopName
+                        ? `<span class="dep-badge badge-dest">→ ${d.lastStopName}</span>`
+                        : '';
+                const expressBadge = d.isExpress ? `<span class="dep-badge badge-express">Express</span>` : '';
+
+                const platformBadge = d.platform
+                    ? `<span class="dep-badge badge-platform">Plat ${d.platform}</span>`
+                    : '';
+
+                return `<div class="dep-row" style="align-items:flex-start;padding:5px 0">
+                    <div>
+                        <span class="${timeClass}">${timeStr}</span>
+                        <span style="color:var(--text-muted);font-size:0.72rem;margin-left:5px">${minsAway <= 0 ? 'Now' : minsAway + ' min'}</span>
+                        <div class="dep-badges">${dirBadge}${routingBadge}${expressBadge}${platformBadge}</div>
+                    </div>
+                </div>`;
+            }).join('');
+
+            return `<div class="dep-group">
+                <div class="dep-group-header">
+                    <span class="dep-group-dot" style="background:${color}"></span>
+                    ${lineName} Line
+                </div>
+                ${rowsHtml}
+            </div>`;
+        }).join('');
+
+    return `<div class="station-popup">${header}${groupsHtml}</div>`;
+}
+
+function buildStationMarkers() {
+    // Melbourne stops.txt has no parent-station rows — every row is a platform with a
+    // parent_station string code like "vic:rail:FGS". Group platforms by that code.
+    const groups = new Map(); // parentCode → {name, lats[], lons[], stopIds Set}
+
+    Object.entries(stopsMap).forEach(([stopId, s]) => {
+        if (!s.parent_station || !s.stop_lat || !s.stop_lon) return;
+        // Skip replacement bus stops
+        if (s.stop_name && s.stop_name.toLowerCase().includes('replacement')) return;
+
+        const code = s.parent_station;
+        if (!groups.has(code)) {
+            groups.set(code, {
+                name: s.stop_name.replace(/ Station$/, '').replace(/ Rail$/, ''),
+                lats: [], lons: [],
+                stopIds: new Set(),
+            });
+        }
+        const g = groups.get(code);
+        g.lats.push(parseFloat(s.stop_lat));
+        g.lons.push(parseFloat(s.stop_lon));
+        g.stopIds.add(String(stopId));
+    });
+
+    groups.forEach((g, parentCode) => {
+        if (stationMarkers.has(parentCode)) return;
+        const lat = g.lats.reduce((a, b) => a + b, 0) / g.lats.length;
+        const lon = g.lons.reduce((a, b) => a + b, 0) / g.lons.length;
+
+        stationPlatforms.set(parentCode, g.stopIds);
+        stationMeta.set(parentCode, { name: g.name, lat, lon });
+
+        const marker = L.marker([lat, lon], {
+            icon: stationIcon(),
+            zIndexOffset: -100,
+            opacity: map.getZoom() >= MIN_ZOOM_FOR_STATIONS ? 1 : 0,
+        });
+
+        marker.on('click', () => {
+            const content = buildDepartureBoard(parentCode, g.name, lat, lon);
+            L.popup({ maxWidth: 320 })
+                .setLatLng([lat, lon])
+                .setContent(content)
+                .openOn(map);
+        });
+
+        marker.addTo(map);
+        stationMarkers.set(parentCode, marker);
+    });
+
+    // Show/hide station markers based on zoom
+    map.on('zoomend', () => {
+        const visible = map.getZoom() >= MIN_ZOOM_FOR_STATIONS;
+        stationMarkers.forEach(m => m.setOpacity(visible ? 1 : 0));
+    });
+}
+
+// ── Vehicle tracking ─────────────────────────────────────────────────────────
+const markers = new Map();
+const vehicleLabels = new Map();
+let hasSetView = false;
+
+async function fetchVehicles() {
+    try {
+        const data = await fetch(VEHICLES_EP).then(r => r.json());
+        latestVehicleEntities = data;
+        const seen = new Set();
+        let active = 0;
+
+        data.forEach(entity => {
+            const v = entity.vehicle;
+            if (!v?.position?.latitude) return;
+            const id = v.vehicle?.id;
+            if (!id) return;
+
+            const age = v.timestamp ? Date.now() - v.timestamp * 1000 : Infinity;
+
+            // Remove trains that haven't sent a position update in too long
+            if (age > REMOVE_MS) {
+                if (markers.has(id)) { map.removeLayer(markers.get(id)); markers.delete(id); }
+                vehicleLabels.delete((v.vehicle?.label || id).toUpperCase());
+                return;
+            }
+
+            seen.add(id);
+            const pos = v.position;
+            const isStale = age > STALE_MS;
+            if (!isStale) active++;
+
+            const routeId = v.trip?.route_id || v.trip?.routeId || '';
+            const color = ROUTE_COLORS[routeId] || DEFAULT_COLOR;
+            const icon = arrowIcon(pos.bearing, color, isStale);
+            const latlng = [pos.latitude, pos.longitude];
+            const label = v.vehicle?.label || id;
+
+            vehicleLabels.set(label.toUpperCase(), { id, timestamp: v.timestamp, isStale });
+
+            if (markers.has(id)) {
+                markers.get(id).setLatLng(latlng).setIcon(icon)
+                    .setZIndexOffset(v.timestamp || 0)
+                    .setPopupContent(buildPopup(entity));
             } else {
-                const upperQuery = query.toUpperCase();
-                filterFn = ([label]) => label.includes(upperQuery);
-            }
-
-            const matches = Array.from(vehicleLabels.entries())
-                .filter(filterFn)
-                .sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0));
-
-            matches.forEach(([label, data]) => {
-                const vehicleId = data.id;
-                const div = document.createElement('div');
-                div.textContent = label;
-                if (data.isStale) {
-                    div.className = 'stale';
-                }
-                div.onclick = () => {
-                    const marker = vehicleMarkers.get(vehicleId);
-                    if (marker) {
-                        map.setView(marker.getLatLng(), 16, { animate: true });
-                        marker.openPopup();
-                    }
-                    searchResults.innerHTML = '';
-                    searchInput.value = '';
-                };
-                searchResults.appendChild(div);
-            });
-        }
-        searchInput.addEventListener('input', e => updateSearchResults(e.target.value));
-        searchInput.addEventListener('keydown', e => {
-            if (e.key === 'Escape') {
-                searchResults.innerHTML = '';
-                searchInput.value = '';
-            }
-        });
-        document.addEventListener('click', e => {
-            if (!searchInput.contains(e.target) && !searchResults.contains(e.target)) {
-                searchResults.innerHTML = '';
+                const m = L.marker(latlng, { icon, zIndexOffset: v.timestamp || 0 })
+                    .bindPopup(buildPopup(entity), { maxWidth: 280 })
+                    .addTo(map);
+                markers.set(id, m);
             }
         });
 
-        function createArrowIcon(bearing, isStale, color) {
-            // bearing: degrees, 0 = north
-            const rotation = bearing ? `rotate(${bearing}deg)` : '';
-            const arrowColor = isStale ? '#808080' : (color || DEFAULT_ARROW_COLOR);
-            return L.divIcon({
-                className: `vehicle-arrow${isStale ? ' stale' : ''}`,
-                iconSize: [18, 18],
-                iconAnchor: [9, 9],
-                html: `<div class="vehicle-arrow-shape" style="transform: ${rotation}; border-bottom-color: ${arrowColor};"></div>`
-            });
+        // Auto-fit on first load
+        if (!hasSetView && markers.size > 0) {
+            map.fitBounds(L.latLngBounds([...markers.values()].map(m => m.getLatLng())));
+            hasSetView = true;
         }
 
-        // Helper to generate popup content for a vehicle
-        function getVehiclePopupContent(vehicleInfo, vehicleId, trip, direction, latitude, longitude, position, vehicleData, entity) {
-            const stopIds = entity.tripUpdate?.stopTimeUpdate?.map(stu => stu.stopId) || [];
-            const stops = stopsMap ? stopIds.map(id => stopsMap[id]) : [];
-            return `
-                ${vehicleInfo?.label ? `<b>Label:</b> ${vehicleInfo.label.toUpperCase()}<br>` : ''}
-                ${vehicleId ? `<b>Vehicle ID:</b> ${vehicleId}<br>` : ''}
-                ${trip?.route_id ? `<b>Route:</b> ${trip.route_id + (direction || '')}<br>` : ''}
-                ${trip?.routeId ? `<b>Route:</b> ${trip.routeId}<br>` : ''}
-                ${trip?.trip_id ? `<b>Trip:</b> ${trip.trip_id}<br>` : ''}
-                ${trip?.tripId ? `<b>Trip:</b> ${trip.tripId}<br>` : ''}
-                ${latitude !== undefined ? `<b>Lat:</b> ${latitude.toFixed(5)}<br>` : ''}
-                ${longitude !== undefined ? `<b>Lon:</b> ${longitude.toFixed(5)}<br>` : ''}
-                ${position?.bearing !== undefined ? `<b>Bearing:</b> ${Number(position.bearing).toFixed(0)}°<br>` : ''}
-                ${position?.speed !== undefined ? `<b>Speed:</b> ${(position.speed * 3.6).toFixed(0)}km/h<br>` : ''}
-                ${position?.odometer !== undefined ? `<b>Odometer:</b> ${Number((position.odometer / 1000).toFixed(0)).toLocaleString('en-NZ')} km<br>` : ''}
-                ${vehicleData?.timestamp ? `<b>Last Update:</b> <span class="live-relative-time" data-timestamp="${vehicleData.timestamp * 1000}">${getRelativeTime(vehicleData.timestamp * 1000)}</span><br>` : ''}
-                ${(() => {
-                    if (stopIds.length === 0) return '';
-                    const stopList = stops.map((s, i) => {
-                        if (!s) return `(${stopIds[i]})<br>`;
-                        const stopName = s.stop_name.replace(/ Station$/, '');
-                        const platform = s.platform_code ? s.platform_code : '';
-                        const arrivalTs = entity.tripUpdate?.stopTimeUpdate?.[i]?.arrival?.time;
-                        const departureTs = entity.tripUpdate?.stopTimeUpdate?.[i]?.departure?.time;
+        // Remove gone vehicles
+        markers.forEach((m, id) => { if (!seen.has(id)) { map.removeLayer(m); markers.delete(id); } });
 
-                        let timeString = '';
-                        const formatTime = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+        document.getElementById('vehicle-count').textContent = `${active} active`;
+        document.getElementById('status-dot').className = '';
+        document.getElementById('last-update').textContent = 'Updated ' + relativeTime(Date.now() - 1);
+    } catch (e) {
+        document.getElementById('status-dot').className = 'error';
+        document.getElementById('last-update').textContent = 'Update failed';
+    }
+}
 
-                        if (arrivalTs && departureTs && arrivalTs !== departureTs) {
-                            const diff = departureTs - arrivalTs;
-                            timeString = `- ${formatTime(arrivalTs)} (+${diff}s)`;
-                        } else if (arrivalTs) {
-                            timeString = `- ${formatTime(arrivalTs)}`;
-                        } else if (departureTs) {
-                            timeString = `- ${formatTime(departureTs)}`;
-                        }
+// ── Alerts ───────────────────────────────────────────────────────────────────
+async function fetchAlerts() {
+    const list = document.getElementById('alerts-list');
+    try {
+        const data = await fetch(ALERTS_EP).then(r => r.json());
+        const alerts = data.filter(e => e.alert);
 
-                        //if (!platform) {
-                        //    console.warn(`No platform code given for: ${s.stop_name} (${vehicleId})`);
-                        //}
-                        return `<i>- ${stopName} ${platform} (${stopIds[i]}) ${timeString}</i><br>`;
-                    }).join('');
-                    return `<b>Stops:</b><br>${stopList}`;
-                })()}
+        if (alerts.length === 0) {
+            list.innerHTML = '<div id="no-alerts">No active alerts.</div>';
+            return;
+        }
+
+        list.innerHTML = '';
+        alerts.forEach(entity => {
+            const a = entity.alert;
+            const effectRaw = a.effect;
+            const effectKey = typeof effectRaw === 'number' ? (EFFECT_INT[effectRaw] || 'OTHER_EFFECT') : (effectRaw || 'OTHER_EFFECT');
+            const effectLabel = EFFECT_LABELS[effectKey] || 'Alert';
+            const header = getTranslation(a.headerText || a.header_text);
+            const desc = getTranslation(a.descriptionText || a.description_text);
+
+            const routes = [...new Set(
+                (a.informedEntity || a.informed_entity || [])
+                    .map(e => e.routeId || e.route_id)
+                    .filter(Boolean)
+                    .map(r => {
+                        const name = getRouteName(r);
+                        return name ? name + ' Line' : r.split(':').filter(Boolean).pop();
+                    })
+            )];
+
+            const card = document.createElement('div');
+            card.className = `alert-card effect-${effectKey}`;
+            card.innerHTML = `
+                <div class="alert-header">
+                    <span class="alert-badge">${effectLabel}</span>
+                    <span class="alert-title">${header || '(no title)'}</span>
+                </div>
+                ${routes.length ? `<div class="alert-routes">${routes.map(r => `<span class="route-tag">${r}</span>`).join('')}</div>` : ''}
+                ${desc ? `<div class="alert-desc">${desc}</div>` : ''}
             `;
-        }
-
-
-        let hasSetView = false;
-        async function fetchAndDisplayVehicles() {
-            try {
-                const response = await fetch(API_ENDPOINT);
-                const vehicleEntities = await response.json();
-                const seenVehicleIds = new Set();
-                let staleCount = 0;
-
-                vehicleEntities.forEach(entity => {
-                    const vehicleData = entity?.vehicle;
-                    if (!vehicleData) return;
-                    const position = vehicleData?.position;
-                    const vehicleId = vehicleData?.vehicle?.id;
-                    const vehicleInfo = vehicleData?.vehicle;
-                    const latitude = position?.latitude;
-                    const longitude = position?.longitude;
-                    const ageInMs = vehicleData.timestamp ? Date.now() - (vehicleData.timestamp * 1000) : Infinity;
-                    const isStale = ageInMs > STALE_TIMEOUT_MS;
-                    const trip = vehicleData?.trip;
-                    const routeId = trip?.route_id || trip?.routeId;
-                    const direction = `-${trip?.direction_id} `;
-                    const arrowColor = ROUTE_COLORS[routeId] || DEFAULT_ARROW_COLOR;
-
-                    if (arrowColor === DEFAULT_ARROW_COLOR) {
-                        console.warn(`No route color defined for route ID: ${routeId}`);
-                    }
-
-                    if (vehicleId && position?.latitude && position?.longitude) {
-                        seenVehicleIds.add(vehicleId);
-                        const latLng = [position.latitude, position.longitude];
-                        const icon = createArrowIcon(position.bearing, isStale, arrowColor);
-
-                        // Use label if available, otherwise fallback to ID. Some feeds don't provide a label.
-                        const searchLabel = vehicleInfo?.label || vehicleId;
-                        if (searchLabel) {
-                            vehicleLabels.set(searchLabel.toUpperCase(), { id: vehicleId, timestamp: vehicleData.timestamp, isStale: isStale });
-                        }
-
-                        // Use timestamp as zIndexOffset so newer updates appear on top
-                        const zOffset = vehicleData.timestamp || 0;
-
-                        if (vehicleMarkers.has(vehicleId)) {
-                            const marker = vehicleMarkers.get(vehicleId);
-                            marker.setLatLng(latLng)
-                                .setIcon(icon)
-                                .setZIndexOffset(zOffset)
-                                .setPopupContent(getVehiclePopupContent(vehicleInfo, vehicleId, trip, direction, latitude, longitude, position, vehicleData, entity));
-                        } else {
-                            const marker = L.marker(latLng, { icon, zIndexOffset: zOffset })
-                                .bindPopup(getVehiclePopupContent(vehicleInfo, vehicleId, trip, direction, latitude, longitude, position, vehicleData, entity))
-                                .addTo(map);
-                            vehicleMarkers.set(vehicleId, marker);
-                        }
-
-                        if (isStale) {
-                            staleCount++;
-                        }
-                    }
-                });
-
-                if (!hasSetView && vehicleMarkers.size > 0) {
-                    const bounds = L.latLngBounds(Array.from(vehicleMarkers.values()).map(marker => marker.getLatLng()));
-                    map.fitBounds(bounds);
-                    hasSetView = true;
-                }
-
-                // Remove old markers
-                vehicleMarkers.forEach((marker, id) => {
-                    if (!seenVehicleIds.has(id)) {
-                        map.removeLayer(marker);
-                        vehicleMarkers.delete(id);
-                    }
-                });
-
-                STATUS_ELEMENT.textContent = `${vehicleMarkers.size} (${vehicleMarkers.size - staleCount} active)`;
-            } catch (error) {
-                console.error('Vehicle Error:', error);
-                STATUS_ELEMENT.textContent = `Error: ${error.message}`;
-            }
-        }
-
-        // --- Initial Fetch and Periodic Refresh ---
-        fetchAndDisplayVehicles(); // Initial load
-        setInterval(fetchAndDisplayVehicles, REFRESH_INTERVAL_MS); // Refresh periodically
-
-        document.addEventListener("visibilitychange", () => {
-            if (document.visibilityState === "visible") {
-                fetchAndDisplayVehicles();
-            }
+            card.addEventListener('click', () => card.classList.toggle('open'));
+            list.appendChild(card);
         });
+    } catch (e) {
+        list.innerHTML = '<div id="no-alerts">Could not load alerts.</div>';
+    }
+}
 
-        // --- Live Update of Relative Times ---
-        setInterval(() => {
-            document.querySelectorAll('.live-relative-time').forEach(el => {
-                const ts = parseInt(el.getAttribute('data-timestamp'));
-                if (ts) el.textContent = getRelativeTime(ts);
-            });
-        }, 1000);
+// ── Search ───────────────────────────────────────────────────────────────────
+const searchInput = document.getElementById('vehicle-search');
+const searchResults = document.getElementById('search-results');
 
-    </script>
+searchInput.addEventListener('input', e => {
+    const q = e.target.value.trim().toUpperCase();
+    searchResults.innerHTML = '';
+    if (!q) return;
 
+    const matches = [...vehicleLabels.entries()]
+        .filter(([label]) => label.includes(q))
+        .sort((a, b) => (b[1].timestamp || 0) - (a[1].timestamp || 0))
+        .slice(0, 12);
+
+    matches.forEach(([label, data]) => {
+        const div = document.createElement('div');
+        div.className = 'result-item' + (data.isStale ? ' stale' : '');
+        div.textContent = label;
+        div.onclick = () => {
+            const m = markers.get(data.id);
+            if (m) { map.setView(m.getLatLng(), 16, { animate: true }); m.openPopup(); }
+            searchResults.innerHTML = ''; searchInput.value = '';
+        };
+        searchResults.appendChild(div);
+    });
+});
+
+searchInput.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { searchResults.innerHTML = ''; searchInput.value = ''; }
+});
+
+document.addEventListener('click', e => {
+    if (!searchInput.contains(e.target) && !searchResults.contains(e.target)) searchResults.innerHTML = '';
+});
+
+// ── Sidebar / panel toggles (mobile) ────────────────────────────────────────
+function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('open');
+}
+
+function toggleLinePanel() {
+    const panel = document.getElementById('right-panel');
+    const btn   = document.getElementById('lines-toggle');
+    panel.classList.toggle('open');
+    btn.textContent = panel.classList.contains('open') ? 'Lines ✕' : 'Lines ▶';
+}
+
+// ── Line → station sequences (Melbourne Metro, city → terminus) ──────────────
+const LINE_STATION_SEQUENCES = {
+    'vic-02-ALM': ['FSS','RMD','BLY','HAW','GFE','AUB','CAM','CBY','ECM','HWL','ASH','JOR','ALM'],
+    'vic-02-BEG': ['FSS','RMD','BLY','HAW','GFE','AUB','CAM','BOX','RWD','HTD','HMT','BOR','UFG','FTG','TCM','UPW','BEG'],
+    'vic-02-CBE': ['FSS','RMD','CFD','OAK','HUN','CLA','WTL','SPG','NPK','DNG','HLM','LBK','NWA','MPK','CBE'],
+    'vic-02-CGB': ['FSS','NME','KEN','NKT','ASV','MPD','ESD','SME','GBV','GRY','OKP','JAC','BMS','CLO','RXP','CGB'],
+    'vic-02-FKN': ['FSS','RMD','SYR','HKN','ARM','MAL','EMV','CFD','CNE','MRB','OMD','MCK','BEN','PAT','MRN','HIG','SOU','CTM','MEN','MOR','ASP','EDI','CSA','BON','CAR','SEA','KAN','FKN'],
+    'vic-02-GWY': ['FSS','RMD','BLY','HAW','GFE','AUB','CAM','DLG','GIR','GAR','HOL','MWY','SYN','GWY'],
+    'vic-02-HBE': ['FSS','CHL','CWD','VPK','FFD','NCE','TBY','MER','RUS','DBN','REG','RES','WAT','GRN','DCK','ELT','HWS','WTT','HBE'],
+    'vic-02-LIL': ['FSS','RMD','BLY','HAW','GFE','AUB','CAM','BOX','RWD','HTD','HMT','BAY','CDN','MLK','LIL'],
+    'vic-02-MDD': ['FSS','CHL','CWD','VPK','FFD','NCE','TBY','MER','RUS','DBN','REG','RES','KPK','LAL','TSN','SMG','EPP','MDD'],
+    'vic-02-PKM': ['FSS','RMD','CFD','OAK','HUN','CLA','WTL','SPG','NPK','DNG','HLM','BEW','NWA','BFD','CDA','OFC','PKM','EPH'],
+    'vic-02-RCE': ['FSS','SGS','RCE'],
+    'vic-02-SHM': ['FSS','RMD','SYR','WIN','PRA','RIP','BCV','ELS','GVE','NBN','MBN','BBH','HAM','SHM'],
+    'vic-02-STY': ['FKN','LWA','SVE','TAB','CPT','BIT','STY'],
+    'vic-02-SUY': ['FSS','SSS','NME','FSY','SUN','ALB','DEK','KPL','WGS','DRT','SUY'],
+    'vic-02-UFD': ['FSS','NME','RPK','FBD','JWL','BWK','ASY','MYN','COB','MLD','FAK','BAT','BEL','CXT','UFD'],
+    'vic-02-WER': ['FSS','SSS','NME','FSY','SUN','ALB','DEK','GIN','SAB','WTO','SHE','ALT','LAV','YVE','NPT','SPT','HCG','WER'],
+    'vic-02-WIL': ['FSS','SSS','NME','FSY','SUN','ALB','DEK','GIN','SAB','WTO','SHE','ALT','LAV','NPT','NWN','WBH','WIL'],
+};
+
+function flyToStation(parentCode) {
+    const meta = stationMeta.get(parentCode);
+    if (!meta) return;
+    // Close mobile panel so the map is visible after flying
+    document.getElementById('right-panel').classList.remove('open');
+    document.getElementById('lines-toggle').textContent = 'Lines ▶';
+
+    map.flyTo([meta.lat, meta.lon], Math.max(map.getZoom(), 15), { duration: 1.2, animate: true });
+    setTimeout(() => {
+        const content = buildDepartureBoard(parentCode, meta.name, meta.lat, meta.lon);
+        L.popup({ maxWidth: 320, autoPan: true })
+            .setLatLng([meta.lat, meta.lon])
+            .setContent(content)
+            .openOn(map);
+    }, 1300);
+}
+
+function buildLinePanel() {
+    const container = document.getElementById('lines-list');
+    if (!container) return;
+    container.innerHTML = '';
+
+    const lineEntries = Object.entries(LINE_STATION_SEQUENCES).sort(([a], [b]) => {
+        const nameA = ROUTE_NAMES[a.split('-').pop()] || a;
+        const nameB = ROUTE_NAMES[b.split('-').pop()] || b;
+        return nameA.localeCompare(nameB);
+    });
+
+    lineEntries.forEach(([lineKey, codes]) => {
+        const suffix = lineKey.split('-').pop();
+        const lineName = ROUTE_NAMES[suffix] || suffix;
+        const color = ROUTE_COLORS[`aus:vic:${lineKey}:`] || DEFAULT_COLOR;
+
+        const stationItems = codes
+            .map(code => {
+                const pk = `vic:rail:${code}`;
+                const meta = stationMeta.get(pk);
+                return meta ? { pk, name: meta.name } : null;
+            })
+            .filter(Boolean);
+
+        if (stationItems.length === 0) return;
+
+        const lineItem = document.createElement('div');
+        lineItem.className = 'line-item';
+        lineItem.innerHTML = `
+            <div class="line-header">
+                <span class="line-dot" style="background:${color};box-shadow:0 0 5px ${color}88"></span>
+                <span class="line-name">${lineName} Line</span>
+                <span class="line-chevron">▶</span>
+            </div>
+            <div class="line-stations">
+                ${stationItems.map(s =>
+                    `<div class="station-item" onclick="flyToStation('${s.pk}')">${s.name}</div>`
+                ).join('')}
+            </div>
+        `;
+        lineItem.querySelector('.line-header').addEventListener('click', () => {
+            lineItem.classList.toggle('open');
+        });
+        container.appendChild(lineItem);
+    });
+}
+
+// ── Live relative-time refresh ───────────────────────────────────────────────
+setInterval(() => {
+    document.querySelectorAll('.live-rt').forEach(el => {
+        const ts = parseInt(el.dataset.ts);
+        if (ts) el.textContent = relativeTime(ts);
+    });
+}, 1000);
+
+// ── Visibility refresh ───────────────────────────────────────────────────────
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') { fetchVehicles(); fetchAlerts(); }
+});
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+fetchVehicles();
+fetchAlerts();
+setInterval(fetchVehicles, REFRESH_MS);
+setInterval(fetchAlerts, 60_000); // Alerts refresh every 60s
+</script>
 </body>
-
 </html>

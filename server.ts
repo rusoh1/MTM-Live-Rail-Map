@@ -2,6 +2,7 @@ import 'bun';
 import { config as loadEnv } from 'dotenv';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { createHmac } from 'crypto';
 
 import { LOG_LABELS, log } from './customUtils';
 import { RailNetwork } from './railNetwork';
@@ -78,6 +79,9 @@ async function initializeServer() {
                 // Raw data endpoint for trains only
                 addRoute('GET', `${prefix}/api/vehicles/trains`, () => Response.json(network.trainEntities));
 
+                // Service alerts endpoint
+                addRoute('GET', `${prefix}/api/alerts`, () => Response.json(network.alertEntities));
+
                 addRoute('GET', `${prefix}/api/trackedtrains`, () => Response.json(network.trackedTrains));
 
                 // stopsMap (To make it easier to map stop IDs to names/platforms)
@@ -143,6 +147,43 @@ async function initializeServer() {
         }
     }
 
+    // PTV Timetable API proxy — signs requests server-side so credentials stay out of the browser.
+    // Requires PTV_DEVID and PTV_KEY in .env (separate from the GTFS Realtime key).
+    // Endpoint: /api/ptv-departures?stop_id=XXXX&route_type=0&limit=10
+    const PTV_DEVID = process.env.PTV_DEVID;
+    const PTV_KEY   = process.env.PTV_KEY;
+    const PTV_BASE  = 'https://timetableapi.ptv.vic.gov.au';
+
+    function signPtvRequest(requestPath: string): string {
+        const withDevId = requestPath + (requestPath.includes('?') ? '&' : '?') + `devid=${PTV_DEVID}`;
+        const sig = createHmac('sha1', PTV_KEY!)
+            .update(withDevId)
+            .digest('hex')
+            .toUpperCase();
+        return `${PTV_BASE}${withDevId}&signature=${sig}`;
+    }
+
+    addRoute('GET', '/api/ptv-departures', async (req) => {
+        if (!PTV_DEVID || !PTV_KEY) {
+            return Response.json({ error: 'PTV_DEVID and PTV_KEY not configured in .env' }, { status: 503 });
+        }
+        const url = new URL(req.url.startsWith('/') ? `http://localhost${req.url}` : req.url);
+        const stopId    = url.searchParams.get('stop_id');
+        const routeType = url.searchParams.get('route_type') ?? '0';
+        const limit     = url.searchParams.get('limit') ?? '10';
+        if (!stopId) return Response.json({ error: 'stop_id required' }, { status: 400 });
+
+        const requestPath = `/v2/mode/${routeType}/stop/${stopId}/departures/by-destination/limit/${limit}`;
+        const signedUrl = signPtvRequest(requestPath);
+        try {
+            const resp = await fetch(signedUrl, { headers: { 'Accept': 'application/json' } });
+            const data = await resp.json();
+            return Response.json(data);
+        } catch (e) {
+            return Response.json({ error: String(e) }, { status: 502 });
+        }
+    });
+
     // Basic root endpoint
     addRoute('GET', '/', () => new Response('LED-Rails Backend Server is operational.', {
         headers: { 'Content-Type': 'text/plain' }
@@ -203,11 +244,18 @@ async function initializeServer() {
                 compressionFormat = "deflate";
             }
 
+            // CORS — allow any origin so map.html can be hosted separately (e.g. cPanel)
+            const corsHeaders: Record<string, string> = {
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET',
+            };
+
             if (compressionFormat && response.body && !response.headers.has('Content-Encoding')) {
                 const headers = new Headers(response.headers);
                 headers.set("Content-Encoding", compressionFormat === "brotli" ? "br" : compressionFormat);
                 headers.set("Vary", "Accept-Encoding");
                 headers.delete("Content-Length");
+                for (const [k, v] of Object.entries(corsHeaders)) headers.set(k, v);
 
                 return new Response(response.body.pipeThrough(new CompressionStream(compressionFormat as CompressionFormat)), {
                     status: response.status,
@@ -216,7 +264,13 @@ async function initializeServer() {
                 });
             }
 
-            return response;
+            const headers = new Headers(response.headers);
+            for (const [k, v] of Object.entries(corsHeaders)) headers.set(k, v);
+            return new Response(response.body, {
+                status: response.status,
+                statusText: response.statusText,
+                headers,
+            });
         },
     });
 

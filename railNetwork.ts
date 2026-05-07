@@ -29,6 +29,7 @@ interface RailNetworkConfig {
     GTFSRealtimeAPI: {
         url: Array<string>; // Endpoint for GTFS Realtime positions feed
         tripsUrl: Array<string> | undefined; // Endpoint for GTFS Realtime trips feed
+        alertsUrl: Array<string> | undefined; // Endpoint for GTFS Realtime service alerts feed
         keyHeader: string; // HTTP header name for API key
         key: string | undefined; // API key (loaded from .env, not config.json)
         fetchIntervalSeconds: number; // How often to fetch updates
@@ -91,6 +92,7 @@ export class RailNetwork {
     stopsMap: Record<string, { stop_name: string; platform_code: string | undefined }> | undefined;
 
     entities: Entity[] = [];
+    alertEntities: Entity[] = [];
     ledRailsAPIs: LEDRailsAPI[] = [];
 
     trainPairs: TrainPair[] = [];
@@ -138,7 +140,12 @@ export class RailNetwork {
 
         if (this.config.stops && this.config.stops.fileName) {
             const stopsPath = path.resolve(configFolderPath, this.config.stops.fileName);
-            this.stopsMap = loadStopsMap(stopsPath);
+            try {
+                this.stopsMap = loadStopsMap(stopsPath);
+            } catch (e) {
+                log(this.id, `Failed to load stops: ${(e as Error).message}`);
+                this.stopsMap = undefined;
+            }
         } else {
             this.stopsMap = undefined;
         }
@@ -312,9 +319,14 @@ export class RailNetwork {
             ? this.config.GTFSRealtimeAPI.tripsUrl.map(url => this.fetchFromAPI(this, url))
             : [];
 
-        const [positionResponses, tripResponses] = await Promise.all([
+        const alertPromises = this.config.GTFSRealtimeAPI.alertsUrl
+            ? this.config.GTFSRealtimeAPI.alertsUrl.map(url => this.fetchFromAPI(this, url))
+            : [];
+
+        const [positionResponses, tripResponses, alertResponses] = await Promise.all([
             Promise.all(positionPromises),
-            Promise.all(tripPromises)
+            Promise.all(tripPromises),
+            Promise.all(alertPromises),
         ]);
 
         const allPositionEntities: Entity[] = [];
@@ -345,6 +357,19 @@ export class RailNetwork {
                     }
                 }
             }
+        }
+
+        // Replace alerts (alerts are always fully replaced, not merged)
+        if (this.config.GTFSRealtimeAPI.alertsUrl && alertResponses.length > 0) {
+            const allAlertEntities: Entity[] = [];
+            for (const alertBatch of alertResponses) {
+                if (alertBatch?.response?.entity) {
+                    allAlertEntities.push(...alertBatch.response.entity);
+                } else if (alertBatch?.entity) {
+                    allAlertEntities.push(...alertBatch.entity);
+                }
+            }
+            this.alertEntities = allAlertEntities;
         }
 
         // Combine new entities with existing ones, removing duplicates by id
